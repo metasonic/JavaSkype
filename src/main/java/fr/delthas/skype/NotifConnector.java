@@ -1,6 +1,8 @@
 package fr.delthas.skype;
 
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
+import org.jsoup.parser.Parser;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -51,7 +53,7 @@ class NotifConnector {
   private int sequenceNumber;
   private String registration;
   private CountDownLatch connectLatch = new CountDownLatch(1);
-  
+
   public NotifConnector(Skype skype, String username, String password) {
     this.skype = skype;
     this.username = username;
@@ -86,7 +88,7 @@ class NotifConnector {
     }, "Skype-Receiver-Thread");
     // TODO should we set daemon?
     // receiverThread.setDaemon(true);
-    
+
     pingThread = new Thread(() -> {
       while (!Thread.interrupted() && !disconnectRequested) {
         if (System.nanoTime() - lastMessageSentTime > pingInterval) {
@@ -108,7 +110,7 @@ class NotifConnector {
     }, "Skype-Ping-Thread");
     pingThread.setDaemon(true);
   }
-  
+
   private static String generateEPID() {
     char[] hexCharacters = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
     // EPID format: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
@@ -137,11 +139,11 @@ class NotifConnector {
     logger.finest("Generated EPID: " + EPID);
     return EPID;
   }
-  
+
   private static String getPlaintext(String string) {
     return Jsoup.parseBodyFragment(string).text();
   }
-  
+
   private static String getSanitized(String raw) {
     if (raw.isEmpty()) {
       return raw;
@@ -173,7 +175,7 @@ class NotifConnector {
     }
     return sb.toString();
   }
-  
+
   private void processPacket(Packet packet) throws IOException {
     logger.finer("Received packet " + packet.command + " " + packet.params);
     logger.finest("Recieved packet body: " + packet.body);
@@ -268,6 +270,8 @@ class NotifConnector {
             logger.log(Level.FINE, "Couldn't parse SDG formatted message", e);
             break;
           }
+          String originalArrivalTime = formatted.headers.get("Original-Arrival-Time");
+          Long messageId = Long.valueOf(formatted.headers.get("Message-ID"));
           String messageType = formatted.headers.get("Message-Type");
           if (messageType == null) {
             break;
@@ -277,6 +281,8 @@ class NotifConnector {
           if (sender == null || receiver == null) {
             break;
           }
+          Message message = null;
+          Matcher matcher = null;
           switch (messageType) {
             case "Text":
             case "RichText":
@@ -284,11 +290,67 @@ class NotifConnector {
                 logger.fine("Received " + messageType + " message sent from " + sender + " which isn't a user");
                 break;
               }
+              message = new Message((User) sender, receiver, getPlaintext(formatted.body), messageId, messageType, originalArrivalTime);
               if (receiver instanceof Group) {
-                skype.groupMessageReceived((Group) receiver, (User) sender, getPlaintext(formatted.body));
+                skype.groupMessageReceived((Group) receiver, (User) sender, message);
               } else {
-                skype.userMessageReceived((User) sender, getPlaintext(formatted.body));
+                skype.userMessageReceived((User) sender, message);
               }
+              break;
+            case "RichText/Contacts":
+              Pattern contactsPattern = Pattern.compile("(s=\"([^\"]+?)\" f=\"([^\"]+?)\")", Pattern.CASE_INSENSITIVE);
+              matcher = contactsPattern.matcher(formatted.body);
+              List<User> contacts = new ArrayList<>();
+
+              while (matcher.find()) {
+                String contactId = matcher.group(2);
+                String contactUsername = matcher.group(3);
+
+                contacts.add(new User(skype, contactId));
+                contacts.get(contacts.size() - 1).setDisplayName(contactUsername);
+              }
+              if (contacts.size() < 1) {
+                contactsPattern = Pattern.compile("(s=\"([^\"]+?)\")", Pattern.CASE_INSENSITIVE);
+                matcher = contactsPattern.matcher(formatted.body);
+                contacts = new ArrayList<>();
+                while (matcher.find()) {
+                  String contactId = matcher.group(2);
+                  contacts.add(new User(skype, contactId));
+                }
+              }
+              skype.contactMessageReceived((User) sender, receiver, contacts);
+              break;
+            case "RichText/Files":
+              break;
+            case "RichText/Sms":
+              break;
+            case "RichText/Location":
+              break;
+            case "RichText/UriObject":
+              //TODO work in progress
+              org.jsoup.nodes.Document docs = Parser.xmlParser().parseInput(formatted.body, "");
+              if (docs.getElementsByTag("meta").size() == 0) {
+                System.out.println("---- ERR ---- No meta?");
+              }
+              Element meta = docs.getElementsByTag("meta").get(0);
+              if (meta.attr("type").equalsIgnoreCase("photo")) {
+                String blob = docs.getElementsByTag("a").get(0).attr("href");
+
+                Pattern BLOBID = Pattern.compile("(0-[a-z]+-d[0-9]-[a-z0-9]{32})");
+                matcher = BLOBID.matcher(blob);
+                if (!matcher.find()) {
+                  System.out.println("---- ERR ---- Blob ID has changed?");
+                }
+                blob = matcher.group(1);
+              }
+              break;
+            case "RichText/Media_FlikMsg":
+              break;
+            case "RichText/Media_Video":
+              break;
+            case "Event/Call":
+              break;
+            case "Control/LiveState":
               break;
             case "ThreadActivity/AddMember":
               List<String> usernames = getXMLFields(formatted.body, "target");
@@ -483,7 +545,7 @@ class NotifConnector {
         System.out.println("Received unknown message: " + packet);
     }
   }
-  
+
   private Packet readPacket() throws IOException {
     StringBuilder firstLineBuilder = new StringBuilder();
     int read;
@@ -538,9 +600,9 @@ class NotifConnector {
       }
       bytesRead += n;
     }
-    
+
     String payload = new String(payloadRaw, StandardCharsets.UTF_8);
-    
+
     if (command.matches("\\d+")) {
       if (command.equals("715")) {
         // sometimes when sending the right <name> in BND CON\MSGR
@@ -553,7 +615,7 @@ class NotifConnector {
       logger.log(Level.SEVERE, "", e);
       throw e;
     }
-    
+
     Matcher matcherHeaders = patternHeaders.matcher(payload);
     if (!matcherHeaders.find()) {
       ParseException e = new ParseException("Couldn't find headers in payload: " + payload);
@@ -568,29 +630,29 @@ class NotifConnector {
     String body = payload.substring(matcherHeaders.end());
     return new Packet(command, parameters, body);
   }
-  
+
   public long connect(String loginToken, String liveToken) throws IOException, InterruptedException {
     logger.finer("Starting notification connector");
     this.loginToken = loginToken;
     this.liveToken = liveToken;
     disconnectRequested = false;
     lastMessageSentTime = System.nanoTime();
-    
+
     long nanoTime = System.nanoTime();
     connectTo(DEFAULT_SERVER_HOSTNAME, DEFAULT_SERVER_PORT);
-    
+
     receiverThread.start();
-    
+
     logger.finest("Ping interval: " + pingInterval / 1000000 + "ms");
-    
+
     logger.finer("Waiting for connection");
     connectLatch.await(); // block until connected
-    
+
     pingThread.start();
-    
+
     return nanoTime + 1000000000L * 24 * 60 * 60;
   }
-  
+
   public long refreshTokens(String loginToken, String liveToken) throws IOException {
     this.loginToken = loginToken;
     this.liveToken = liveToken;
@@ -605,52 +667,52 @@ class NotifConnector {
     sendPacket("ATH", "CON\\USER", formattedATH);
     return System.nanoTime() + 1000000000L * 24 * 60 * 60;
   }
-  
+
   public void sendUserMessage(User user, String message) throws IOException {
     sendMessage("8:" + user.getUsername(), getSanitized(message));
   }
-  
+
   public void sendGroupMessage(Group group, String message) throws IOException {
     sendMessage("19:" + group.getId() + "@thread.skype", getSanitized(message));
   }
-  
+
   public void addUserToGroup(User user, Role role, Group group) throws IOException {
     String body = String.format("<thread><id>19:%s@thread.skype</id><members><member><mri>8:%s</mri><role>%s</role></member></members></thread>",
             group.getId(), user.getUsername(), role.getRoleString());
     sendPacket("PUT", "MSGR\\THREAD", body);
   }
-  
+
   public void removeUserFromGroup(User user, Group group) throws IOException {
     String body = String.format("<thread><id>19:%s@thread.skype</id><members><member><mri>8:%s</mri></member></members></thread>", group.getId(),
             user.getUsername());
     sendPacket("DEL", "MSGR\\THREAD", body);
   }
-  
+
   public void changeGroupTopic(Group group, String topic) throws IOException {
     String body =
             String.format("<thread><id>19:%s@thread.skype</id><properties><topic>%s</topic></properties></thread>", group.getId(), getSanitized(topic));
     sendPacket("PUT", "MSGR\\THREAD", body);
   }
-  
+
   public void changeUserRole(User user, Role role, Group group) throws IOException {
     String body = String.format("<thread><id>19:%s@thread.skype</id><members><member><mri>8:%s</mri><role>%s</role></member></members></thread>",
             group.getId(), user.getUsername(), role.getRoleString());
     sendPacket("PUT", "MSGR\\THREAD", body);
   }
-  
+
   public void changePresence(Presence presence) throws IOException {
     String formattedPublicationBody = String.format("<user><s n=\"IM\"><Status>%s</Status></s></user>", presence.getPresenceString());
     String formattedPublicationMessage = FormattedMessage.format("8:" + getSelfLiveUsername() + ";epid={" + EPID + "}", "8:" + getSelfLiveUsername(), "Publication: 1.0",
             formattedPublicationBody, "Uri: /user", "Content-Type: application/user+xml");
     sendPacket("PUT", "MSGR\\PRESENCE", formattedPublicationMessage);
   }
-  
+
   private void sendMessage(String entity, String message) throws IOException {
     String body = FormattedMessage.format("8:" + getSelfLiveUsername() + ";epid={" + EPID + "}", entity, "Messaging: 2.0", message,
             "Content-Type: application/user+xml", "Message-Type: RichText");
     sendPacket("SDG", "MSGR", body);
   }
-  
+
   public synchronized void disconnect() {
     logger.finer("Stopping notification connector");
     try {
@@ -673,7 +735,7 @@ class NotifConnector {
       }
     }
   }
-  
+
   private synchronized void sendPacket(String command, String parameters, String body) throws IOException {
 //    String headerString = registration != null ? "Registration: " + registration + "\r\n" : "";
     // Weird, but it's working better without sending the registration token. Solved the 911 problem but needs more testing.
@@ -690,7 +752,7 @@ class NotifConnector {
     logger.finest("Sent packet: " + messageString);
     lastMessageSentTime = System.nanoTime();
   }
-  
+
   private void connectTo(String hostname, int port) throws IOException {
     logger.finest("Connecting to hostname: " + hostname + " port: " + port);
     if (socket != null) {
@@ -703,7 +765,7 @@ class NotifConnector {
     authenticated = false;
     sendPacket("CNT", "CON", "<connect><ver>2</ver><agent><os>Windows</os><osVer>Windows 10.0  (build</osVer><proc>8 3600 I-586-6-45-7 Intel Core i</proc><lcid>en-US</lcid></agent></connect>");
   }
-  
+
   private void updateThread(Node threadNode) {
     Group group = null;
     String topic = null;
@@ -755,7 +817,7 @@ class NotifConnector {
     group.setTopic(topic);
     group.setUsers(users);
   }
-  
+
   private Object parseEntity(String rawEntity) {
     // returns a user or a group
     logger.finest("Parsing entity " + rawEntity);
@@ -795,7 +857,7 @@ class NotifConnector {
       throw new IllegalArgumentException();
     }
   }
-  
+
   private Document getDocument(String XML) throws ParseException {
     try {
       return documentBuilder.parse(new InputSource(new StringReader(XML)));
@@ -805,7 +867,7 @@ class NotifConnector {
       throw new ParseException(e);
     }
   }
-  
+
   private List<String> getXMLFields(String XML, String fieldName) throws ParseException {
     NodeList nodes = getDocument(XML).getElementsByTagName(fieldName);
     List<String> fields = new ArrayList<>(nodes.getLength());
@@ -814,7 +876,7 @@ class NotifConnector {
     }
     return fields;
   }
-  
+
   private String getXMLField(String XML, String fieldName) throws ParseException {
     List<String> fields = getXMLFields(XML, fieldName);
     if (fields.size() > 1) {
@@ -825,22 +887,22 @@ class NotifConnector {
     }
     return fields.get(0);
   }
-  
+
   private String getSelfLiveUsername() {
     return skype.getUser(username).getLiveUsername();
   }
-  
+
   private static class Packet {
     public final String command;
     public final String params;
     public final String body;
-  
+
     public Packet(String command, String params, String body) {
       this.command = command;
       this.params = params;
       this.body = body;
     }
-  
+
     @Override
     public String toString() {
       return String.format("Command: %s Params: %s Body: %s", command, params, body);

@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
  */
 public final class Skype {
   private static final Logger logger = Logger.getLogger("fr.delthas.skype");
-  
+
   static {
     try {
       setDebug(null);
@@ -27,13 +27,14 @@ public final class Skype {
       // will not throw
     }
   }
-  
+
   private final String username;
   private final String password;
   private final boolean microsoft;
   private final Thread refreshThread;
   private List<UserMessageListener> userMessageListeners = new LinkedList<>();
   private List<GroupMessageListener> groupMessageListeners = new LinkedList<>();
+  private List<ContactsReceivedListener> contactsReceivedListeners = new LinkedList<>();
   private List<UserPresenceListener> userPresenceListeners = new LinkedList<>();
   private List<GroupPropertiesListener> groupPropertiesListeners = new LinkedList<>();
   private ErrorListener errorListener;
@@ -48,9 +49,9 @@ public final class Skype {
   private boolean connecting = false;
   private volatile long expires;
   private IOException exceptionDuringConnection;
-  
+
   // --- Public API (except listeners add/remove methods) --- //
-  
+
   /**
    * Builds a new Skype connection without connecting to anything.
    *
@@ -61,7 +62,7 @@ public final class Skype {
     this.username = username;
     this.password = password;
     microsoft = username.contains("@");
-  
+
     refreshThread = new Thread(() -> {
       long expires = System.nanoTime() + (Skype.this.expires - System.nanoTime()) * 3 / 4;
       while (!Thread.interrupted()) {
@@ -88,7 +89,7 @@ public final class Skype {
     refreshThread.setName("Skype-Ping-Thread");
     refreshThread.setDaemon(true);
   }
-  
+
   /**
    * Enables or disables debug of the Skype library (globally). (By default logs are <b>disabled</b>.)
    * <p>
@@ -112,7 +113,7 @@ public final class Skype {
       logger.addHandler(fh);
     }
   }
-  
+
   /**
    * Calls {@code connect(Presence.CONNECTED)}.
    *
@@ -123,7 +124,7 @@ public final class Skype {
   public void connect() throws IOException, InterruptedException {
     connect(Presence.ONLINE);
   }
-  
+
   /**
    * Connects the Skype interface. Will block until connected.
    *
@@ -140,42 +141,42 @@ public final class Skype {
     }
     connected = true;
     connecting = true;
-  
+
     logger.fine("Connecting to Skype");
-  
+
     reset();
-  
+
     long expires = Long.MAX_VALUE;
-  
+
     try {
       if (microsoft) {
         // webConnector and notifConnector depend on liveConnector
         expires = liveConnector.refreshTokens();
       }
-    
+
       // notifConnector depends on webConnector
       expires = Long.min(expires, webConnector.refreshTokens(liveConnector.getSkypeToken()));
-    
+
       getSelf().setPresence(presence, false);
-    
+
       // will block until connected
       expires = Long.min(expires, notifConnector.connect(liveConnector.getLoginToken(), liveConnector.getLiveToken()));
     } catch (IOException e) {
       throw new IOException("Error thrown during connection. Check your credentials?", e);
     }
-  
+
     this.expires = expires;
-    
+
     connecting = false;
-  
+
     if (exceptionDuringConnection != null) {
       // an exception has been thrown during connection
       throw new IOException("Error thrown during connection. Check your credentials?", exceptionDuringConnection);
     }
-  
+
     refreshThread.start();
   }
-  
+
   /**
    * Disconnects the Skype interface.
    * <p>
@@ -187,9 +188,9 @@ public final class Skype {
       return;
     }
     connected = false;
-  
+
     logger.fine("Disconnecting from Skype");
-  
+
     refreshThread.interrupt();
     notifConnector.disconnect();
     for (Map.Entry<String, User> user : users.entrySet()) {
@@ -197,7 +198,7 @@ public final class Skype {
     }
     reset();
   }
-  
+
   /**
    * @return The current list of contact requests to this Skype account (snapshot, won't be updated).
    */
@@ -205,7 +206,7 @@ public final class Skype {
     ensureConnected();
     return Collections.unmodifiableList(new ArrayList<>(contactRequests));
   }
-  
+
   /**
    * @return The groups (or threads) the Skype account is currently in (as a snapshot: the list won't be updated).
    */
@@ -213,7 +214,7 @@ public final class Skype {
     ensureConnected();
     return Collections.unmodifiableList(new ArrayList<>(groups.values()));
   }
-  
+
   /**
    * @return The User object representing the Skype account.
    */
@@ -221,7 +222,7 @@ public final class Skype {
     ensureConnected();
     return getUser(username);
   }
-  
+
   /**
    * @return The current list of contacts of the account (snapshot, won't be updated).
    */
@@ -229,7 +230,7 @@ public final class Skype {
     ensureConnected();
     return Collections.unmodifiableList(new ArrayList<>(contacts));
   }
-  
+
   /**
    * Changes the presence of the Skype account.
    * <p>
@@ -250,31 +251,31 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   /**
    * @return true if the Skype interface is connected.
    */
   public boolean isConnected() {
     return connected;
   }
-  
+
   // --- Package-private methods --- //
-  
+
   User getUser(String username) {
     User user = users.computeIfAbsent(username, u -> new User(this, u));
     return user;
   }
-  
+
   Group getGroup(String id) {
     Group group = groups.computeIfAbsent(id, i -> new Group(this, i));
     return group;
   }
-  
+
   void addContact(String username) {
     logger.finest("Adding contact " + username);
     contacts.add(getUser(username));
   }
-  
+
   void error(IOException e) {
     logger.log(Level.SEVERE, "Error thrown", e);
     if (errorListener != null) {
@@ -288,13 +289,13 @@ public final class Skype {
       disconnect();
     }
   }
-  
+
   private void ensureConnected() throws IllegalStateException {
     if (!connected) {
       throw new IllegalStateException("Not connected to Skype!");
     }
   }
-  
+
   private void reset() {
     logger.finest("Resetting the Skype object");
     liveConnector = new LiveConnector(username, password);
@@ -306,9 +307,9 @@ public final class Skype {
     contactRequests = new LinkedList<>();
     exceptionDuringConnection = null;
   }
-  
+
   // --- Package-private methods that simply call the web connector --- //
-  
+
   void block(User user) {
     ensureConnected();
     try {
@@ -318,7 +319,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void unblock(User user) {
     ensureConnected();
     try {
@@ -328,7 +329,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void sendContactRequest(User user, String greeting) {
     ensureConnected();
     try {
@@ -338,7 +339,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void removeFromContacts(User user) {
     ensureConnected();
     try {
@@ -349,7 +350,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   byte[] getAvatar(User user) {
     ensureConnected();
     try {
@@ -359,7 +360,7 @@ public final class Skype {
       return null;
     }
   }
-  
+
   void updateUser(User user) {
     if (!users.containsKey(user.getUsername())) {
       try {
@@ -370,7 +371,7 @@ public final class Skype {
       }
     }
   }
-  
+
   void acceptContactRequest(ContactRequest contactRequest) {
     ensureConnected();
     try {
@@ -381,7 +382,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void declineContactRequest(ContactRequest contactRequest) {
     ensureConnected();
     try {
@@ -392,9 +393,9 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   // --- Package-private methods that simply call the notification connector --- //
-  
+
   void sendUserMessage(User user, String message) {
     ensureConnected();
     try {
@@ -404,7 +405,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void sendGroupMessage(Group group, String message) {
     ensureConnected();
     try {
@@ -414,7 +415,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void addUserToGroup(User user, Role role, Group group) {
     ensureConnected();
     try {
@@ -424,7 +425,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void removeUserFromGroup(User user, Group group) {
     ensureConnected();
     try {
@@ -434,7 +435,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void changeUserRole(User user, Role role, Group group) {
     ensureConnected();
     try {
@@ -444,7 +445,7 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   void changeGroupTopic(Group group, String topic) {
     ensureConnected();
     try {
@@ -454,45 +455,52 @@ public final class Skype {
       error(e);
     }
   }
-  
+
   // --- Listeners call methods --- //
-  
-  void userMessageReceived(User sender, String message) {
+
+  void userMessageReceived(User sender, Message message) {
     updateUser(sender);
     logger.finer("Received message: " + message + " from user: " + sender);
     for (UserMessageListener listener : userMessageListeners) {
       listener.messageReceived(sender, message);
     }
   }
-  
-  void groupMessageReceived(Group group, User sender, String message) {
+
+  void groupMessageReceived(Group group, User sender, Message message) {
     logger.finer("Received group message: " + message + " from user: " + sender + " in group: " + group);
     for (GroupMessageListener listener : groupMessageListeners) {
       listener.messageReceived(group, sender, message);
     }
   }
-  
+
+  void contactMessageReceived(User sender, Object receiver, List<User> contacts) {
+    logger.finer("Received contacts from: " + sender.getUsername() + " Contacts: " + contacts + " On private channel: " + (receiver instanceof Group));
+    for (ContactsReceivedListener listener : contactsReceivedListeners) {
+      listener.contactReceived((User) sender, receiver, contacts);
+    }
+  }
+
   void userPresenceChanged(User user, Presence oldPresence, Presence presence) {
     logger.finer("User: " + user + " changed presence from: " + oldPresence + " to: " + presence);
     for (UserPresenceListener listener : userPresenceListeners) {
       listener.presenceChanged(user, oldPresence, presence);
     }
   }
-  
+
   void usersAddedToGroup(List<User> users, Group group) {
     logger.finer("Users: " + users.stream().map(User::getUsername).collect(Collectors.joining(", ")) + " added to group: " + group);
     for (GroupPropertiesListener listener : groupPropertiesListeners) {
       listener.usersAdded(group, users);
     }
   }
-  
+
   void usersRemovedFromGroup(List<User> users, Group group) {
     logger.finer("Users: " + users.stream().map(User::getUsername).collect(Collectors.joining(", ")) + " removed from group: " + group);
     for (GroupPropertiesListener listener : groupPropertiesListeners) {
       listener.usersRemoved(group, users);
     }
   }
-  
+
   void usersRolesChanged(Group group, List<Pair<User, Role>> newRoles) {
     logger.finer(
             "User roles changed: " + newRoles.stream().map(p -> p.getFirst().getUsername() + ":" + p.getSecond()).collect(Collectors.joining(", ")));
@@ -500,16 +508,16 @@ public final class Skype {
       listener.usersRolesChanged(group, newRoles);
     }
   }
-  
+
   void groupTopicChanged(Group group, String topic) {
     logger.finer("Group: " + group + " topic changed to: " + topic);
     for (GroupPropertiesListener listener : groupPropertiesListeners) {
       listener.topicChanged(group, topic);
     }
   }
-  
+
   // --- Listeners change methods ---
-  
+
   /**
    * Adds a user message listener.
    *
@@ -518,7 +526,7 @@ public final class Skype {
   public void addUserMessageListener(UserMessageListener userMessageListener) {
     userMessageListeners.add(userMessageListener);
   }
-  
+
   /**
    * Removes a user message listener.
    *
@@ -527,7 +535,7 @@ public final class Skype {
   public void removeUserMessageListener(UserMessageListener userMessageListener) {
     userMessageListeners.remove(userMessageListener);
   }
-  
+
   /**
    * Adds a group message listener.
    *
@@ -536,7 +544,7 @@ public final class Skype {
   public void addGroupMessageListener(GroupMessageListener groupMessageListener) {
     groupMessageListeners.add(groupMessageListener);
   }
-  
+
   /**
    * Removes a group message listener.
    *
@@ -545,7 +553,24 @@ public final class Skype {
   public void removeGroupMessageListener(GroupMessageListener groupMessageListener) {
     groupMessageListeners.remove(groupMessageListener);
   }
-  
+
+  /**
+   * Adds a contact message listener.
+   *
+   * @param contactReceivedListener The user message listener to add.
+   */
+  public void addContactReceivedListener(ContactsReceivedListener contactReceivedListener) {
+    contactsReceivedListeners.add(contactReceivedListener);
+  }
+
+  /**
+   * Removes a contact message listener.
+   *
+   * @param contactReceivedListener The user message listener to add.
+   */
+  public void removeContactReceivedListener(ContactsReceivedListener contactReceivedListener) {
+    contactsReceivedListeners.add(contactReceivedListener);
+  }
   /**
    * Adds a user presence listener.
    *
@@ -554,7 +579,7 @@ public final class Skype {
   public void addUserPresenceListener(UserPresenceListener userPresenceListener) {
     userPresenceListeners.add(userPresenceListener);
   }
-  
+
   /**
    * Removes a user presence listener.
    *
@@ -563,7 +588,7 @@ public final class Skype {
   public void removeUserPresenceListener(UserPresenceListener userPresenceListener) {
     userPresenceListeners.remove(userPresenceListener);
   }
-  
+
   /**
    * Adds a group properties listener.
    *
@@ -572,7 +597,7 @@ public final class Skype {
   public void addGroupPropertiesListener(GroupPropertiesListener groupPropertiesListener) {
     groupPropertiesListeners.add(groupPropertiesListener);
   }
-  
+
   /**
    * Removes a group properties listener.
    *
@@ -581,7 +606,7 @@ public final class Skype {
   public void removeGroupPropertiesListener(GroupPropertiesListener groupPropertiesListener) {
     groupPropertiesListeners.remove(groupPropertiesListener);
   }
-  
+
   /**
    * Sets an error listener for the Skype interface.
    *

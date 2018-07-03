@@ -12,5 +12,5 @@ public interface GroupMessageListener {
    * @param sender  The sender of the message.
    * @param message The message sent.
    */
-  void messageReceived(Group group, User sender, String message);
+  void messageReceived(Group group, User sender, Message message);
 }

@@ -19,7 +19,17 @@ final class FormattedMessage {
     this.headers = headers;
     this.body = body;
   }
-  
+  @Override
+  public String toString() {
+    return "FormattedMessage{" +
+        "sender='" + sender + '\'' +
+        ", receiver='" + receiver + '\'' +
+        ", type='" + type + '\'' +
+        ", headers=" + headers +
+        ", body='" + body + '\'' +
+        '}';
+  }
+
   public static FormattedMessage parseMessage(String formattedMessage) {
     int firstBlockEnd = formattedMessage.indexOf("\r\n\r\n");
     if (firstBlockEnd == -1) {
