@@ -9,6 +9,9 @@ import org.jsoup.Connection.Response;
 import org.jsoup.Jsoup;
 
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -95,6 +98,14 @@ class WebConnector {
 
         User loggedUser = updateUser(selfJSON, false, username);
 
+        JSONArray financialStatsResponse = getFinancialStats(skypeToken, loggedUser.getLiveUsername());
+        if (financialStatsResponse != null && financialStatsResponse.length() > 0) {
+            JSONObject financialData = financialStatsResponse.getJSONObject(0);
+            loggedUser.setBalance(financialData.optInt("balance"));
+            loggedUser.setBalanceFormatted(financialData.optString("balanceFormatted"));
+        }
+
+
         String profilesResponse =
                 sendRequest(Method.GET, "https://contacts.skype.com/contacts/v2/users/" + loggedUser.getLiveUsername() + "/contacts", true).body();
 
@@ -128,6 +139,9 @@ class WebConnector {
         String userCity = null;
         String userDisplayName = null;
         String userAvatarUrl = null;
+        String userPhoneHome = null;
+        String userPhoneMobile = null;
+        String userPhoneOffice = null;
         try {
             if (!newContactType) {
                 userUsername = userJSON.optString("username");
@@ -138,6 +152,9 @@ class WebConnector {
                 userCity = userJSON.optString("city", null);
                 userDisplayName = userJSON.optString("displayname", null);
                 userAvatarUrl = userJSON.optString("avatarUrl");
+                userPhoneHome = userJSON.optString("phoneHome");
+                userPhoneMobile = userJSON.optString("phoneMobile");
+                userPhoneOffice = userJSON.optString("phoneOffice");
             } else {
                 if (userJSON.optBoolean("blocked", false)) {
                     return null;
@@ -158,7 +175,7 @@ class WebConnector {
                     logger.warning("Error while parsing entity " + mri + ": unknown network format:" + mri);
                     return null;
                 }
-                if (network != 8) {
+                if (network != 8 || network != 28) {
                     return null;
                 }
                 userUsername = mri.substring(senderBegin + 1);
@@ -193,6 +210,9 @@ class WebConnector {
         user.setMood(getPlaintext(userMood));
         user.setAvatarUrl(userAvatarUrl);
         user.setLiveUsername(userUsername);
+        user.setPhoneHome(userPhoneHome);
+        user.setPhoneMobile(userPhoneMobile);
+        user.setPhoneOffice(userPhoneOffice);
         return user;
     }
 
@@ -281,6 +301,100 @@ class WebConnector {
 
     private Response sendJsonRequest(Method method, String apiPath, JSONObject json) throws IOException {
         return sendJsonRequest(method, apiPath, false, json);
+    }
+
+    private JSONObject findEndpoint(String skypeToken) {
+        for (int i = 1; i <= 5; i++) {
+            try {
+                logger.info("Finding other endpoints... Attempt " + Integer.toString(i) + " of 5");
+
+                String rawData = "{\"endpointFeatures\":\"Agent,Presence2015,MessageProperties,CustomUserProperties,Highlights,Casts,CortanaBot,ModernBots,AutoIdleForWebApi,InviteFree\"}";
+                String url = "https://ch1-client-s.gateway.messenger.live.com/v1/users/ME/endpoints";
+                URL obj = new URL(url);
+                HttpURLConnection con = (HttpURLConnection) obj.openConnection();
+
+                con.setRequestMethod("POST");
+                con.setRequestProperty("Authentication", "skypetoken=" + skypeToken);
+                con.setDoOutput(true);
+
+                OutputStreamWriter w = new OutputStreamWriter(con.getOutputStream(), "UTF-8");
+                w.write(rawData);
+                w.close();
+
+                int responseCode = con.getResponseCode();
+                if (responseCode != 201) {
+                    String responseMsg = con.getResponseMessage();
+                    logger.warning("Error getting endpoints: " + responseMsg);
+                    continue;
+                }
+
+                String regToken = con.getHeaderField("Set-RegistrationToken");
+
+                Connection conn = Jsoup.connect("https://ch1-client-s.gateway.messenger.live.com/v1/users/ME/presenceDocs/messagingService")
+                        .maxBodySize(100 * 1024 * 1024)
+                        .method(Method.GET)
+                        .followRedirects(false)
+                        .timeout(10000)
+                        .ignoreContentType(true)
+                        .ignoreHttpErrors(true);
+
+                conn.header("RegistrationToken", regToken);
+
+                Response resp = conn.execute();
+                JSONObject endpointData = new JSONObject(resp.body());
+
+                return endpointData;
+            } catch (IOException e) {
+                logger.warning("Could not get endpoint information!");
+                logger.log(Level.SEVERE, "", e);
+            }
+        }
+
+        return null;
+    }
+
+    Presence getUserCurrentStatus() {
+        JSONObject endpointData = findEndpoint(skypeToken);
+
+        if (endpointData == null)
+            return null;
+
+        logger.info("User availability: " + endpointData.optString("availability", "Not found") + ", status: " + endpointData.optString("status", "Not found"));
+        switch (endpointData.optString("status")) {
+            case "Online":
+                return Presence.ONLINE;
+            case "Busy":
+                return Presence.BUSY;
+            case "Idle":
+                return Presence.IDLE;
+            case "Away":
+                return Presence.AWAY;
+            case "Offline":
+                return Presence.HIDDEN;
+            default:
+                return Presence.HIDDEN;
+        }
+    }
+
+    private JSONArray getFinancialStats(String skypeToken, String username) throws IOException {
+        if (skypeToken == null || username == null)
+            return null;
+
+        String url = "https://consumer.entitlement.skype.com/users/" + username + "/services?language=en";
+        Connection conn = Jsoup.connect(url).maxBodySize(100 * 1024 * 1024).timeout(10000).method(Method.GET).ignoreContentType(true).ignoreHttpErrors(true);
+        logger.finest("Sending GET request at " + url);
+
+        conn.header("X-Skypetoken", skypeToken);
+        conn.header("Accept", "application/json; ver=3.0");
+        Response resp = conn.execute();
+
+        if (resp.statusCode() != 200)
+            return null;
+
+        String body = resp.body();
+        JSONArray financialStats = new JSONArray(body);
+
+        return financialStats;
     }
 
 }

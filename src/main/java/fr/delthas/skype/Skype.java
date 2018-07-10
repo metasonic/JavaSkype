@@ -117,7 +117,7 @@ public final class Skype {
     }
 
     /**
-     * Calls {@code connect(Presence.CONNECTED)}.
+     * Calls {@code connect(Presence.ONLINE)}.
      *
      * @throws IOException          If an error is thrown while connecting.
      * @throws InterruptedException If the connection is interrupted.
@@ -130,7 +130,7 @@ public final class Skype {
     /**
      * Connects the Skype interface. Will block until connected.
      *
-     * @param presence The initial presence of the Skype account after connection. Cannot be {@link Presence#OFFLINE}.
+     * @param presence The initial presence of the Skype account after connection. Cannot be {@link Presence#OFFLINE}. Setting to null will use the user's current status (Hidden if offline).
      * @throws IOException          If an error is thrown while connecting.
      * @throws InterruptedException If the connection is interrupted.
      */
@@ -159,7 +159,13 @@ public final class Skype {
             // notifConnector depends on webConnector
             expires = Long.min(expires, webConnector.refreshTokens(liveConnector.getSkypeToken()));
 
-            getSelf().setPresence(presence, false);
+            if (presence == null) {
+                Presence userCurrentStatus = webConnector.getUserCurrentStatus();
+                logger.info("Current user status: " + userCurrentStatus);
+                getSelf().setPresence(userCurrentStatus, false);
+            } else {
+                getSelf().setPresence(presence, false);
+            }
 
             // will block until connected
             expires = Long.min(expires, notifConnector.connect(liveConnector.getLoginToken(), liveConnector.getLiveToken()));
@@ -199,6 +205,14 @@ public final class Skype {
             user.getValue().setPresence(Presence.OFFLINE, false);
         }
         reset();
+        try {
+            logger.fine("Attempting to reconnect");
+            connect();
+        } catch (IOException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -294,7 +308,13 @@ public final class Skype {
 
     private void ensureConnected() throws IllegalStateException {
         if (!connected) {
-            throw new IllegalStateException("Not connected to Skype!");
+            try {
+                connect();
+            } catch (IOException e) {
+                errorListener.error(e);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
     }
 
@@ -650,7 +670,7 @@ public final class Skype {
      *
      * @param groupCallListener The user call listener to add.
      */
-    public void addUserCallListener(GroupCallListener groupCallListener) {
+    public void addGroupCallListener(GroupCallListener groupCallListener) {
         groupCallListeners.add(groupCallListener);
     }
 
@@ -659,7 +679,7 @@ public final class Skype {
      *
      * @param groupCallListener The user call listener to add.
      */
-    public void removeUserCallListener(GroupCallListener groupCallListener) {
+    public void removeGroupCallListener(GroupCallListener groupCallListener) {
         groupCallListeners.remove(groupCallListener);
     }
 

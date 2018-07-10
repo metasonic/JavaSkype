@@ -446,6 +446,27 @@ class NotifConnector {
                                 }, body = 'Hi yyyyyyyyyyy, I'd like to add you as a contact.
                                 '}                             */
                             break;
+                        case "ThreadActivity/DeleteMember":
+                            /*
+                            ------------------  ThreadActivity/DeleteMember
+                            FormattedMessage {
+                                sender = '19:720595f3ee7d4fdab68423eef5c826cc@thread.skype', receiver = '19:720595f3ee7d4fdab68423eef5c826cc@thread.skype', type = 'ThreadActivity/DeleteMember', headers = {
+                                    Original - Arrival - Time = 2018 - 07 - 08 T17: 36: 28.624 Z,
+                                    Relationship - Type = Explicit,
+                                    Thread - Topic = dummy test topic,
+                                    Message - ID = 1531071388624,
+                                    Message - Type = ThreadActivity / DeleteMember,
+                                    Version = 1531071388624,
+                                    Messaging = 2.0,
+                                    Counterparty - Message - ID = 1531071388624,
+                                    X - MMS - IM - Format = FN = MS % 20 Shell % 20 Dlg;EF = ;CO = 0;CS = 0;PF = 0,
+                                    Content - Length = 139,
+                                    Is - Active = true,
+                                    origincontextid = 1982327737723630145,
+                                    Content - Type = text / plain;charset = UTF - 8
+                                }, body = '<deletemember><eventtime>1531071389499</eventtime><initiator>8:xxxxxx</initiator><target>8:xxxxxx</target></deletemember>'
+                            }                             */
+                            break;
                         default:
                             //TODO remove once all events are implemented
                             System.out.println();
@@ -909,8 +930,10 @@ class NotifConnector {
             return skype.getGroup(name);
         } else if (network == 1) {
             return skype.getUser("live:" + name);
-        } else if (network == 4 || network == 28) {
+        } else if (network == 4) {
             return null;
+        } else if (network == 28) { // used for bots
+            return skype.getUser(name);
         } else {
             logger.warning("Error while parsing entity " + rawEntity + ": unknown network:" + network);
             throw new IllegalArgumentException();
