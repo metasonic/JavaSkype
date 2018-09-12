@@ -9,7 +9,7 @@ public class HeroCard {
      */
 
     public JSONObject createHeroCard(String title, String subtitle, String cardText, JSONArray arrayOfButtons) {
-        String imageUrl = "https://i.imgur.com/NPXzuUF.jpg";
+        String imageUrl = "https://i.imgur.com/7ea46Xl.gif";
 
         JSONObject json = new JSONObject();
         json.put("attachments",
