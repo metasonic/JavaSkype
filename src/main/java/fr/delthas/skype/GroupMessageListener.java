@@ -1,5 +1,7 @@
 package fr.delthas.skype;
 
+import java.util.Date;
+
 /**
  * A listener for new messages sent to a Skype account.
  */
@@ -12,5 +14,5 @@ public interface GroupMessageListener {
      * @param sender  The sender of the message.
      * @param message The message sent.
      */
-    void messageReceived(Group group, User sender, Message message);
+    void messageReceived(Group group, User sender, String message, Date date);
 }

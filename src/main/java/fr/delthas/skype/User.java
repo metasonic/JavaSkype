@@ -1,5 +1,7 @@
 package fr.delthas.skype;
 
+import org.json.JSONObject;
+
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -73,6 +75,14 @@ public class User {
         skype.sendUserMessage(this, message);
     }
 
+    /**
+     * Sends a card to this user.
+     *
+     * @param card The card to send to this user.
+     */
+    public void sendCard(JSONObject card) {
+        skype.sendUserCard(this, card);
+    }
     /**
      * @return The username of this user.
      */

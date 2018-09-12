@@ -30,35 +30,45 @@ class LiveConnector {
     public synchronized long refreshTokens() throws IOException {
         logger.finer("Refreshing tokens");
 
-        Response authorize = Jsoup.connect(SERVER_HOSTNAME + "/oauth20_authorize.srf?client_id=00000000480BC46C&scope=service%3A%3Askype.com%3A%3AMBI_SSL&response_type=token&redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf&state=999&locale=en").maxBodySize(100 * 1024 * 1024).timeout(10000).method(Method.GET).ignoreContentType(true).ignoreHttpErrors(true).execute();
-
-        String MSPOK = authorize.cookie("MSPOK");
-        if (MSPOK == null) {
-            IOException e = new IOException("Error while connecting to Live: MSPOK not set.");
-            logger.log(Level.SEVERE, "", e);
-            throw e;
-        }
-
         Elements PPFTs = null;
-        for (int i = 0; i < authorize.body().length(); i++) {
-            i = authorize.body().indexOf("<input", i);
-            if (i == -1) {
-                break;
+        Response authorize = null;
+        String MSPOK = null;
+        int counter = 0;
+        //@todo check if necessary
+        while (counter++ < 3) {
+            authorize = Jsoup.connect(SERVER_HOSTNAME + "/oauth20_authorize.srf?client_id=00000000480BC46C&scope=service%3A%3Askype.com%3A%3AMBI_SSL&response_type=token&redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf&state=999&locale=en").maxBodySize(100 * 1024 * 1024).timeout(10000).method(Method.GET).ignoreContentType(true).ignoreHttpErrors(true).execute();
+
+            MSPOK = authorize.cookie("MSPOK");
+            if (MSPOK == null) {
+                IOException e = new IOException("Error while connecting to Live: MSPOK not set.");
+                logger.log(Level.SEVERE, "", e);
+                throw e;
             }
-            int j = authorize.body().indexOf(">", i);
-            if (j == -1) {
-                break;
+
+            for (int i = 0; i < authorize.body().length(); i++) {
+                i = authorize.body().indexOf("<input", i);
+                if (i == -1) {
+                    break;
+                }
+                int j = authorize.body().indexOf(">", i);
+                if (j == -1) {
+                    break;
+                }
+                PPFTs = Jsoup.parseBodyFragment(authorize.body().substring(i, j + ">".length())).select("input[name=PPFT][value]");
+                if (!PPFTs.isEmpty()) {
+                    break;
+                }
             }
-            PPFTs = Jsoup.parseBodyFragment(authorize.body().substring(i, j + ">".length())).select("input[name=PPFT][value]");
-            if (!PPFTs.isEmpty()) {
-                break;
+            if (PPFTs == null || PPFTs.isEmpty()) {
+                IOException e = new IOException("Error while connecting to Live: PPFT not found.");
+                logger.log(Level.SEVERE, "", e);
+                if (counter >= 3) {
+                    throw e;
+                }
+                logger.log(Level.SEVERE, "Trying to get PPFT one more time");
             }
         }
-        if (PPFTs == null || PPFTs.isEmpty()) {
-            IOException e = new IOException("Error while connecting to Live: PPFT not found.");
-            logger.log(Level.SEVERE, "", e);
-            throw e;
-        }
+
         String PPFT = PPFTs.first().attr("value");
 
         String postUrl = SERVER_HOSTNAME + "/ppsecure/post.srf?client_id=00000000480BC46C&scope=service%3A%3Askype.com%3A%3AMBI_SSL&response_type=token&redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf&state=999&locale=en";

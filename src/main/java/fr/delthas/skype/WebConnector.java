@@ -17,6 +17,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -79,6 +81,162 @@ class WebConnector {
 
     public byte[] getAvatar(User user) throws IOException {
         return sendRequest(Method.GET, user.getAvatarUrl(), true).bodyAsBytes();
+    }
+
+    public byte[] getFileAsBytes(String url) throws IOException {
+        return prepareConnectWithAuthorizationToken(Method.GET, url, true)
+                .header("Accept", "application/json")
+                .execute().bodyAsBytes();
+    }
+
+    private String getUriObject(String content, String url, String type, String uriObjectExtraAttr, String title, String desc, HashMap<String, String> keyvals) {
+        String titleTag = title == null ? "" : (title.equals("") ? "<Title/>" : String.format("<Title>Title: %s</Title>", title));
+        String descTag = desc == null ? "" : (desc.equals("") ? "<Description/>" : String.format("<Description>Description: %s</Description>", desc));
+
+        StringBuilder valTags = new StringBuilder();
+        Iterator it = keyvals.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry pair = (Map.Entry) it.next();
+            valTags.append(String.format("<%s v=\"%s\"/>", pair.getKey(), pair.getValue()));
+            it.remove(); // avoids a ConcurrentModificationException
+        }
+
+        return String.format("<URIObject type=\"%s\" uri=\"%s\"%s>%s%s%s%s</URIObject>", type, url, uriObjectExtraAttr, titleTag, descTag, content, valTags.toString());
+    }
+
+    void sendFile(Group group, SkypeFile file) throws IOException {
+        int counter = 0;
+        while (counter < 3) {
+            try {
+                counter++;
+                trySendFile(group, file);
+                break;
+            } catch (Exception e) {
+                if (counter < 3) {
+                    logger.warning("An error occurred trying to send a file (try number: " + String.valueOf(counter) + "), " + e.getMessage());
+                } else {
+                    throw e;
+                }
+            }
+        }
+    }
+
+    private void trySendFile(Group group, SkypeFile file) throws IOException {
+        SkypeFileType fileType = file.getEnumType();
+        String uploadId = getIdForUploadUrl(group, file.getName(), fileType);
+
+        String fullUrl = "https://api.asm.skype.com/v1/objects/" + uploadId;
+        int statusCode = putFileReturnStatusCode(file.getContent(), fullUrl + fileType.getUploadUrlPart());
+        if (statusCode != 201) {
+            throw new IOException("Couldn't create a file by PUT request, received code " + Integer.toString(statusCode));
+        }
+
+        HashMap<String, String> keyvals = new HashMap<>();
+        keyvals.put("OriginalName", file.getName());
+
+        String messageBody;
+
+        String linkToFile = String.format(fileType.getLinkToFileFormat(), uploadId);
+        String viewLink = String.format("<a href=\"%s\">%s</a>", linkToFile, linkToFile);
+
+        switch (fileType) {
+            case IMAGE:
+                messageBody = this.getUriObject(String.format("%s<meta type=\"photo\" originalName=\"%s\"/>", viewLink, file.getName()), fullUrl, fileType.getUriObjectType(), file.getUriObjectParams(fullUrl), "", "", keyvals);
+                break;
+
+/*      case VIDEO:
+        keyvals.put("FileSize", String.format("%d", 0));
+
+        messageBody = this.getUriObject(String.format("To view this video message, go to: %s", viewLink), fullUrl, fileType.getUriObjectType(), file.getUriObjectParams(fullUrl), null, null, keyvals);
+        break;*/
+
+/*      case AUDIO:
+        keyvals.put("FileSize", String.format("%d", 0));
+
+        messageBody = this.getUriObject(String.format("To hear this voice message, go to: %s", viewLink), fullUrl, fileType.getUriObjectType(), file.getUriObjectParams(fullUrl), null, null, keyvals);
+        break;*/
+
+            default:
+                keyvals.put("FileSize", String.format("%d", file.getContent().length));
+
+                messageBody = this.getUriObject(viewLink, fullUrl, fileType.getUriObjectType(), file.getUriObjectParams(fullUrl), file.getName(), file.getName(), keyvals);
+        }
+
+        group.sendMessage(messageBody, true, fileType.getMsgType(), "Content-Type: application/user+xml");
+    }
+
+    private String getIdForUploadUrl(Group group, String fileName, SkypeFileType fileType) throws IOException {
+        JSONObject meta = new JSONObject();
+        switch (fileType) {
+            case IMAGE:
+                meta.put("type", "pish/image");
+                break;
+
+            default:
+                meta.put("type", "sharing/file");
+                meta.put("filename", fileName);
+        }
+
+        JSONArray permission = new JSONArray();
+        permission.put("read");
+
+        JSONObject groupPermission = new JSONObject();
+        groupPermission.put("19:" + group.getId() + "@thread.skype", permission);
+
+        meta.put("permissions", groupPermission);
+
+        Connection conn = prepareConnectWithAuthorizationToken(Method.POST, "https://api.asm.skype.com/v1/objects", true)
+                .requestBody(meta.toString())
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("X-Client-Version", "908/1.117.0.21");
+
+        String idResponse = conn.execute().body();
+
+        JSONObject json = new JSONObject(idResponse);
+
+        String uploadId = json.getString("id");
+
+        if (uploadId == null) {
+            throw new IOException("Error while parsing file id response, no uploadId ");
+        }
+
+        return uploadId;
+    }
+
+    /**
+     * Do not use as it corrupts at least pictures. Use native HttpURLConnection instead, implemented in
+     *
+     * @param fileBytes
+     * @param urlFull
+     * @return
+     * @throws IOException
+     * @see #putFileReturnStatusCode(byte[], String)
+     * @deprecated
+     */
+    private int putFileReturnStatusCodeJsoup(byte[] fileBytes, String urlFull) throws IOException {
+        Connection putConnection = prepareConnectWithAuthorizationToken(Method.PUT, urlFull, true)
+                .requestBody(new String(fileBytes))
+                .header("Content-Type", "multipart/form-data; charset=utf-8");
+
+        return putConnection.execute().statusCode();
+    }
+
+    private int putFileReturnStatusCode(byte[] fileContents, String urlFull) throws IOException {
+        java.net.URL url = new java.net.URL(urlFull);
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+        conn.setDoOutput(true);
+
+        conn.setRequestMethod("PUT");
+        conn.setRequestProperty("Authorization", "skype_token " + skypeToken);
+        conn.setRequestProperty("Content-Type", "multipart/form-data");
+        conn.setRequestProperty("Content-Length", String.valueOf(fileContents.length));
+
+        java.io.OutputStream out = conn.getOutputStream();
+        out.write(fileContents);
+        out.close();
+
+        return conn.getResponseCode();
     }
 
     public void updateUser(User user) throws IOException {
@@ -257,13 +415,17 @@ class WebConnector {
         }
     }
 
+    //@todo
+    private Connection prepareConnectWithAuthorizationToken(Method method, String apiPath, boolean absoluteApiPath) {
+        String url = absoluteApiPath ? apiPath : SERVER_HOSTNAME + apiPath;
+        Connection conn = Jsoup.connect(url).maxBodySize(100 * 1024 * 1024).timeout(10000).method(method).ignoreContentType(true).ignoreHttpErrors(true);
+        logger.finest("Sending " + method + " request at " + url);
+        conn.header("Authorization", "skype_token " + skypeToken);
+        return conn;
+    }
+
     private Response sendRequest(Method method, String apiPath, boolean absoluteApiPath, String... keyval) throws IOException {
-        String url;
-        if (apiPath.contains("contacts")) {
-            url = absoluteApiPath ? apiPath : "https://contacts.skype.com" + apiPath;
-        } else {
-            url = absoluteApiPath ? apiPath : SERVER_HOSTNAME + apiPath;
-        }
+        String url = absoluteApiPath ? apiPath : SERVER_HOSTNAME + apiPath;
         Connection conn = Jsoup.connect(url).maxBodySize(100 * 1024 * 1024).timeout(10000).method(method).ignoreContentType(true).ignoreHttpErrors(true);
         logger.finest("Sending " + method + " request at " + url);
         if (skypeToken != null) {

@@ -1,5 +1,7 @@
 package fr.delthas.skype;
 
+import java.util.Date;
+
 /**
  * A listener for new messages sent to a Skype account.
  */
@@ -11,5 +13,5 @@ public interface UserMessageListener {
      * @param sender  The sender of the message.
      * @param message The message sent.
      */
-    void messageReceived(User sender, Message message);
+    void messageReceived(User sender, String message, Date date);
 }

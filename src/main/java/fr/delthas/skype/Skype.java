@@ -1,5 +1,7 @@
 package fr.delthas.skype;
 
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
@@ -31,10 +33,11 @@ public final class Skype {
     private final String username;
     private final String password;
     private final boolean microsoft;
-    private final Thread refreshThread;
+    private Thread refreshThread;
     private List<UserMessageListener> userMessageListeners = new LinkedList<>();
     private List<GroupMessageListener> groupMessageListeners = new LinkedList<>();
     private List<ContactsReceivedListener> contactsReceivedListeners = new LinkedList<>();
+    private List<GroupFileListener> groupFileListeners = new LinkedList<>();
     private List<UserPresenceListener> userPresenceListeners = new LinkedList<>();
     private List<GroupPropertiesListener> groupPropertiesListeners = new LinkedList<>();
     private List<UserCallListener> userCallListeners = new LinkedList<>();
@@ -65,31 +68,25 @@ public final class Skype {
         this.password = password;
         microsoft = username.contains("@");
 
-        refreshThread = new Thread(() -> {
-            long expires = System.nanoTime() + (Skype.this.expires - System.nanoTime()) * 3 / 4;
-            while (!Thread.interrupted()) {
-                try {
-                    if (System.nanoTime() >= expires) {
-                        try {
-                            logger.finer("Refreshing tokens");
-                            if (microsoft) {
-                                expires = liveConnector.refreshTokens();
-                            }
-                            expires = Long.min(expires, webConnector.refreshTokens(liveConnector.getSkypeToken()));
-                            expires = Long.min(expires, notifConnector.refreshTokens(liveConnector.getLoginToken(), liveConnector.getLiveToken()));
-                        } catch (IOException e) {
-                            logger.log(Level.INFO, "Error while refreshing tokens", e);
-                        }
-                        expires = System.nanoTime() + (expires - System.nanoTime()) * 3 / 4;
-                    }
-                    Thread.sleep(10000);
-                } catch (InterruptedException e) {
-                    return;
-                }
-            }
-        });
+        refreshThread = new RefreshThread();
         refreshThread.setName("Skype-Ping-Thread");
         refreshThread.setDaemon(true);
+    }
+
+    public static SkypeFile getSkypeFile(String name, byte[] content, SkypeFileType fileType) {
+        switch (fileType) {
+            case IMAGE:
+                return new SkypeImage(name, content);
+/*
+      case VIDEO:
+        return new SkypeVideo(name, content);*/
+
+/*      case AUDIO:
+        return new SkypeAudio(name, content);*/
+
+            default:
+                return new SkypeFile(name, content);
+        }
     }
 
     /**
@@ -117,7 +114,7 @@ public final class Skype {
     }
 
     /**
-     * Calls {@code connect(Presence.ONLINE)}.
+     * Calls {@code connect(Presence.CONNECTED)}.
      *
      * @throws IOException          If an error is thrown while connecting.
      * @throws InterruptedException If the connection is interrupted.
@@ -127,17 +124,7 @@ public final class Skype {
         connect(Presence.ONLINE);
     }
 
-    /**
-     * Connects the Skype interface. Will block until connected.
-     *
-     * @param presence The initial presence of the Skype account after connection. Cannot be {@link Presence#OFFLINE}. Setting to null will use the user's current status (Hidden if offline).
-     * @throws IOException          If an error is thrown while connecting.
-     * @throws InterruptedException If the connection is interrupted.
-     */
-    public void connect(Presence presence) throws IOException, InterruptedException {
-        if (presence == Presence.OFFLINE) {
-            throw new IllegalArgumentException("Presence can't be set to offline. Use HIDDEN if you want to connect without being visible.");
-        }
+    private void tryConnect(Presence presence) throws IOException, InterruptedException {
         if (connecting || connected) {
             return;
         }
@@ -186,6 +173,35 @@ public final class Skype {
     }
 
     /**
+     * Connects the Skype interface. Will block until connected.
+     *
+     * @param presence The initial presence of the Skype account after connection. Cannot be {@link Presence#OFFLINE}.
+     * @throws IOException          If an error is thrown while connecting.
+     * @throws InterruptedException If the connection is interrupted.
+     */
+    public void connect(Presence presence) throws IOException, InterruptedException {
+        if (presence == Presence.OFFLINE) {
+            throw new IllegalArgumentException("Presence can't be set to offline. Use HIDDEN if you want to connect without being visible.");
+        }
+        int counter = 0;
+        while (counter < 3) {
+            try {
+                counter++;
+                tryConnect(presence);
+                break;
+            } catch (Exception e) {
+                if (counter < 3) {
+                    logger.warning("An error occurred trying to connect (try number: " + String.valueOf(counter) + "), " + e.getMessage());
+                    connected = false;
+                    connecting = false;
+                } else {
+                    throw e;
+                }
+            }
+        }
+    }
+
+    /**
      * Disconnects the Skype interface.
      * <p>
      * All User, Group, and ContactRequest objects will remain valid for the next connections. Make sure to reconnect (start) before triggering actions
@@ -205,14 +221,6 @@ public final class Skype {
             user.getValue().setPresence(Presence.OFFLINE, false);
         }
         reset();
-        try {
-            logger.fine("Attempting to reconnect");
-            connect();
-        } catch (IOException e) {
-            e.printStackTrace();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
     }
 
     /**
@@ -303,16 +311,26 @@ public final class Skype {
             exceptionDuringConnection = e;
         } else {
             disconnect();
+
+            logger.log(Level.INFO, "trying to reconnect straightaway");
+            try {
+                this.connect(Presence.ONLINE);
+            } catch (IOException | InterruptedException e1) {
+                logger.log(Level.SEVERE, "Error thrown while trying to reconnect", e1);
+            }
         }
     }
 
     private void ensureConnected() throws IllegalStateException {
         if (!connected) {
+            logger.log(Level.SEVERE, "Was not connected while trying to ensure connected, attempting to connect...");
             try {
                 connect();
             } catch (IOException e) {
+                logger.log(Level.SEVERE, "Exception while reconnecting", e);
                 errorListener.error(e);
             } catch (InterruptedException e) {
+                logger.log(Level.SEVERE, "Exception while reconnecting", e);
                 e.printStackTrace();
             }
         }
@@ -328,6 +346,10 @@ public final class Skype {
         users = new HashMap<>();
         contactRequests = new LinkedList<>();
         exceptionDuringConnection = null;
+
+        refreshThread = new RefreshThread();
+        refreshThread.setName("Skype-Ping-Thread");
+        refreshThread.setDaemon(true);
     }
 
     // --- Package-private methods that simply call the web connector --- //
@@ -373,13 +395,56 @@ public final class Skype {
         }
     }
 
-    byte[] getAvatar(User user) {
+    public byte[] getAvatar(User user) {
         ensureConnected();
         try {
             return webConnector.getAvatar(user);
         } catch (IOException e) {
             error(e);
             return null;
+        }
+    }
+
+    /**
+     * @param group
+     * @param fileName
+     * @param fileBytes
+     * @param image
+     * @see #sendFile(Group, SkypeFile)
+     * @deprecated , left for backward compatibility
+     */
+    public void sendFile(Group group, String fileName, byte[] fileBytes, boolean image) {
+        SkypeFile skypeFile = getSkypeFile(fileName, fileBytes, image ? SkypeFileType.IMAGE : SkypeFileType.PLAIN_FILE);
+        sendFile(group, skypeFile);
+    }
+
+    public void sendFile(Group group, SkypeFile skypeFile) {
+        ensureConnected();
+        try {
+            webConnector.sendFile(group, skypeFile);
+        } catch (IOException e) {
+            error(e);
+            return;
+        }
+    }
+
+    byte[] getFile(String url) {
+        ensureConnected();
+        try {
+            return webConnector.getFileAsBytes(url);
+        } catch (IOException e) {
+            error(e);
+            return null;
+        }
+    }
+
+    void sendGroupMessage(Group group, String message, boolean raw, String messageType, String contentTypeHeader) {
+        ensureConnected();
+        try {
+            logger.finer("Sending group: " + group + " message: " + message);
+            notifConnector.sendGroupMessage(group, message, raw, messageType, contentTypeHeader);
+        } catch (IOException e) {
+            error(e);
         }
     }
 
@@ -428,13 +493,21 @@ public final class Skype {
         }
     }
 
-    void sendGroupMessage(Group group, String message) {
+    void sendUserCard(User user, JSONObject card) {
         ensureConnected();
+        logger.finer("Sending user: " + user + " card: " + card);
         try {
-            logger.finer("Sending group: " + group + " message: " + message);
-            notifConnector.sendGroupMessage(group, message);
+            notifConnector.sendUserCard(user, card);
         } catch (IOException e) {
-            error(e);
+            e.printStackTrace();
+        }
+    }
+
+    void userMessageReceived(User sender, String message, Date date) {
+        updateUser(sender);
+        logger.finer("Received message: " + message + " from user: " + sender);
+        for (UserMessageListener listener : userMessageListeners) {
+            listener.messageReceived(sender, message, date);
         }
     }
 
@@ -480,18 +553,17 @@ public final class Skype {
 
     // --- Listeners call methods --- //
 
-    void userMessageReceived(User sender, Message message) {
-        updateUser(sender);
-        logger.finer("Received message: " + message + " from user: " + sender);
-        for (UserMessageListener listener : userMessageListeners) {
-            listener.messageReceived(sender, message);
+    void groupMessageReceived(Group group, User sender, String message, Date date) {
+        logger.finer("Received group message: " + message + " from user: " + sender + " in group: " + group);
+        for (GroupMessageListener listener : groupMessageListeners) {
+            listener.messageReceived(group, sender, message, date);
         }
     }
 
-    void groupMessageReceived(Group group, User sender, Message message) {
-        logger.finer("Received group message: " + message + " from user: " + sender + " in group: " + group);
-        for (GroupMessageListener listener : groupMessageListeners) {
-            listener.messageReceived(group, sender, message);
+    void groupFileReceived(Group group, User sender, SkypeFile skypeFile) {
+        logger.finer("Received file (type: " + skypeFile.getEnumType().getName() + ") from user: " + sender + " in group: " + group);
+        for (GroupFileListener listener : groupFileListeners) {
+            listener.fileReceived(group, sender, skypeFile);
         }
     }
 
@@ -499,6 +571,15 @@ public final class Skype {
         logger.finer("Received contacts from: " + sender.getUsername() + " Contacts: " + contacts + " On private channel: " + (receiver instanceof Group));
         for (ContactsReceivedListener listener : contactsReceivedListeners) {
             listener.contactReceived(sender, receiver, contacts);
+        }
+    }
+
+    // Call listeners
+    void userCallReceived(User sender, User receiver, boolean wasCallEnded, boolean wasCallMissed, Long messageId, Date date, int callDuration, List<User> participants) {
+        updateUser(sender);
+        logger.finer("Received call: " + " from user: " + sender);
+        for (UserCallListener listener : userCallListeners) {
+            listener.callReceived(sender, receiver, wasCallEnded, wasCallMissed, messageId, date, callDuration, participants);
         }
     }
 
@@ -538,20 +619,20 @@ public final class Skype {
         }
     }
 
-    // Call listeners
-    void userCallReceived(User sender, Message message, boolean callStatus, int callDuration, List<User> participants) {
-        updateUser(sender);
-        logger.finer("Received message: " + message + " from user: " + sender);
-        for (UserCallListener listener : userCallListeners) {
-            listener.callReceived(sender, message, callStatus, callDuration, participants);
+    void groupCallReceived(User sender, Group receiver, boolean wasCallEnded, boolean wasCallMissed, Long messageId, Date date, int callDuration, List<User> participants) {
+        logger.finer("Received group call: " + " from user: " + sender + " in group: " + receiver);
+        for (GroupCallListener listener : groupCallListeners) {
+            listener.callReceived(sender, receiver, wasCallEnded, wasCallMissed, messageId, date, callDuration, participants);
         }
     }
 
-    void groupCallReceived(Group group, User sender, Message message, boolean callStatus, int callDuration, List<User> participants) {
-        logger.finer("Received group message: " + message + " from user: " + sender + " in group: " + group);
-        for (GroupCallListener listener : groupCallListeners) {
-            listener.callReceived(group, sender, message, callStatus, callDuration, participants);
-        }
+    /**
+     * Adds a file message listener.
+     *
+     * @param groupFileListener The group file listener to add.
+     */
+    public void addGroupFileListener(GroupFileListener groupFileListener) {
+        groupFileListeners.add(groupFileListener);
     }
 
     // --- Listeners change methods ---
@@ -581,6 +662,15 @@ public final class Skype {
      */
     public void addGroupMessageListener(GroupMessageListener groupMessageListener) {
         groupMessageListeners.add(groupMessageListener);
+    }
+
+    /**
+     * Removes a group call listener.
+     *
+     * @param groupCallListener The user call listener to remove.
+     */
+    public void removeGroupCallListener(GroupCallListener groupCallListener) {
+        groupCallListeners.remove(groupCallListener);
     }
 
     /**
@@ -674,13 +764,31 @@ public final class Skype {
         groupCallListeners.add(groupCallListener);
     }
 
-    /**
-     * Removes a group call listener.
-     *
-     * @param groupCallListener The user call listener to add.
-     */
-    public void removeGroupCallListener(GroupCallListener groupCallListener) {
-        groupCallListeners.remove(groupCallListener);
+    private class RefreshThread extends Thread {
+        @Override
+        public void run() {
+            long expires = System.nanoTime() + (Skype.this.expires - System.nanoTime()) * 3 / 4;
+            while (!Thread.interrupted()) {
+                try {
+                    if (System.nanoTime() >= expires) {
+                        try {
+                            logger.finer("Refreshing tokens");
+                            if (microsoft) {
+                                expires = liveConnector.refreshTokens();
+                            }
+                            expires = Long.min(expires, webConnector.refreshTokens(liveConnector.getSkypeToken()));
+                            expires = Long.min(expires, notifConnector.refreshTokens(liveConnector.getLoginToken(), liveConnector.getLiveToken()));
+                        } catch (IOException e) {
+                            logger.log(Level.INFO, "Error while refreshing tokens", e);
+                        }
+                        expires = System.nanoTime() + (expires - System.nanoTime()) * 3 / 4;
+                    }
+                    Thread.sleep(10000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }
     }
 
     /**
