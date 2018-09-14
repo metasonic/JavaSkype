@@ -438,6 +438,18 @@ class WebConnector {
         return conn.execute();
     }
 
+    Response sendRequestWithSkypeTokenCookie(Method method, String apiPath, boolean absoluteApiPath) throws IOException {
+        String url = absoluteApiPath ? apiPath : SERVER_HOSTNAME + apiPath;
+        Connection conn = Jsoup.connect(url).maxBodySize(100 * 1024 * 1024).timeout(10000).method(method).ignoreContentType(true).ignoreHttpErrors(true);
+        logger.finest("Sending " + method + " request at " + url);
+        if (skypeToken != null) {
+            conn.header("Cookie", "skypetoken_asm=" + skypeToken);
+        } else {
+            logger.fine("No token sent for the request at: " + url);
+        }
+        return conn.execute();
+    }
+
     private Response sendRequest(Method method, String apiPath, String... keyval) throws IOException {
         return sendRequest(method, apiPath, false, keyval);
     }

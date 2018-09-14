@@ -55,6 +55,10 @@ public final class Skype {
     private volatile long expires;
     private IOException exceptionDuringConnection;
 
+    public WebConnector getWebConnector() {
+        return webConnector;
+    }
+
     // --- Public API (except listeners add/remove methods) --- //
 
     /**

@@ -8,9 +8,7 @@ public class HeroCard {
     You can create more cards using https://adaptivecards.io/
      */
 
-    public JSONObject createHeroCard(String title, String subtitle, String cardText, JSONArray arrayOfButtons) {
-        String imageUrl = "https://i.imgur.com/7ea46Xl.gif";
-
+    public JSONObject createHeroCard(String mainImageUrl, String title, String subtitle, String cardText, JSONArray arrayOfButtons) {
         JSONObject json = new JSONObject();
         json.put("attachments",
                 new JSONArray()
@@ -18,7 +16,7 @@ public class HeroCard {
                                 .put("contentType", "application/vnd.microsoft.card.hero")
                                 .put("content",
                                         new JSONObject().put("images",
-                                                new JSONArray().put(new JSONObject().put("url", imageUrl)))
+                                                new JSONArray().put(new JSONObject().put("url", mainImageUrl)))
                                                 .put("title", title)
                                                 .put("subtitle", subtitle)
                                                 .put("text", cardText)

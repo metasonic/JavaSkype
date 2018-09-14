@@ -1,17 +1,22 @@
 package fr.delthas.skype;
 
 import org.json.JSONObject;
+import org.jsoup.Connection;
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
+import org.jsoup.parser.Parser;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
+import javax.imageio.ImageIO;
 import javax.net.ssl.SSLSocketFactory;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -33,6 +38,7 @@ class NotifConnector {
     private static final Pattern patternFirstLine = Pattern.compile("([A-Z]+|\\d+) \\d+ ([A-Z]+(?:\\\\[A-Z]+)?) (\\d+)");
     private static final Pattern patternHeaders = Pattern.compile("\\A(?:(?:Set-Registration: (.+)|[A-Za-z\\-]+: .+)\\R)*\\R");
     private static final Pattern patternXFR = Pattern.compile("([a-zA-Z0-9\\.\\-]+):(\\d+)");
+    private static final Pattern BLOBID = Pattern.compile("(0-[a-z]+-d[0-9]{1,2}-[a-z0-9]{32})");
     private static final long pingInterval = 30 * 1000000000L; // seconds
     private final DocumentBuilder documentBuilder;
     private final Skype skype;
@@ -349,22 +355,56 @@ class NotifConnector {
                         case "RichText/Location":
                             break;
                         case "RichText/UriObject":
-//                            //TODO work in progress
-//                            org.jsoup.nodes.Document docs = Parser.xmlParser().parseInput(formatted.body, "");
-//                            if (docs.getElementsByTag("meta").size() == 0) {
-//                                System.out.println("---- ERR ---- No meta?");
-//                            }
-//                            Element meta = docs.getElementsByTag("meta").get(0);
-//                            if (meta.attr("type").equalsIgnoreCase("photo")) {
-//                                String blob = docs.getElementsByTag("a").get(0).attr("href");
-//
-//                                Pattern BLOBID = Pattern.compile("(0-[a-z]+-d[0-9]-[a-z0-9]{32})");
-//                                matcher = BLOBID.matcher(blob);
-//                                if (!matcher.find()) {
-//                                    System.out.println("---- ERR ---- Blob ID has changed?");
-//                                }
-//                                blob = matcher.group(1);
-//                            }
+                            //TODO clean up
+                            User from = (User) sender;
+                            org.jsoup.nodes.Document document = Parser.xmlParser().parseInput(formatted.body, "");
+                            if (document.getElementsByTag("meta").size() == 0) {
+                                throw new IllegalArgumentException("No meta? " + formatted);
+                            }
+                            Element meta = document.getElementsByTag("meta").get(0);
+
+
+                            if (meta.attr("type").equalsIgnoreCase("photo")) {
+                                String blob = document.getElementsByTag("a").get(0).attr("href");
+                                matcher = BLOBID.matcher(blob);
+                                boolean processFile = true;
+
+                                if (!matcher.find()) {
+//                                    throw new IllegalArgumentException("Blob ID has changed?");
+                                    System.out.println("Blob ID has changed?");
+                                    processFile = false;
+                                }
+                                if (processFile) {
+                                    blob = matcher.group(1);
+
+                                    Connection.Response fileStatus = skype.getWebConnector()
+                                            .sendRequestWithSkypeTokenCookie(Connection.Method.GET,
+                                                    "https://api.asm.skype.com/v1/objects/" +
+                                                            blob + "/views/imgpsh_fullsize/status", true);
+
+                                    JSONObject fileStatusInfo = new JSONObject(fileStatus.body());
+
+                                    Connection.Response fileLocation = skype.getWebConnector()
+                                            .sendRequestWithSkypeTokenCookie(Connection.Method.GET,
+                                                    fileStatusInfo.get("status_location").toString(), true);
+
+
+                                    JSONObject fileLocationInfo = new JSONObject(fileLocation.body());
+                                    while (!fileLocationInfo.get("content_state").toString().equalsIgnoreCase("ready")) {
+                                        fileLocationInfo = new JSONObject(skype.getWebConnector()
+                                                .sendRequestWithSkypeTokenCookie(Connection.Method.GET,
+                                                        fileStatusInfo.get("status_location").toString(), true).body());
+                                    }
+                                    Connection.Response fileContent = skype.getWebConnector()
+                                            .sendRequestWithSkypeTokenCookie(Connection.Method.GET,
+                                                    fileLocationInfo.get("view_location").toString(), true);
+
+                                    BufferedImage img = ImageIO.read(new ByteArrayInputStream(fileContent.bodyAsBytes()));
+                                    ImageIO.write(img, "png", new File(meta.attr("originalName")));
+                                }
+
+                            }
+
                             break;
                         case "RichText/Media_FlikMsg":
                             break;
